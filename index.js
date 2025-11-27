@@ -5,17 +5,20 @@ import qs from "qs";
 const app = express();
 app.use(express.json());
 
-// Guardado temporal en memoria (luego puedes migrarlo a DB)
-const store = {}; // user: tokens
+// Guardado temporal en memoria
+const store = {}; // user → { access, refresh, expires_at }
 
+// Refresca token si está vencido
 async function refreshAccessIfNeeded(user) {
   const rec = store[user];
   if (!rec) throw new Error("no_tokens");
 
+  // Si el token sigue siendo válido por 1 minuto → úsalo
   if (rec.expires_at > Date.now() + 60000) {
     return rec.access_token;
   }
 
+  // Refrescar token
   const payload = {
     client_id: process.env.CLIENT_ID,
     client_secret: process.env.CLIENT_SECRET,
@@ -23,9 +26,11 @@ async function refreshAccessIfNeeded(user) {
     grant_type: "refresh_token"
   };
 
-  const r = await axios.post("https://oauth2.googleapis.com/token", qs.stringify(payload), {
-    headers: { "Content-Type": "application/x-www-form-urlencoded" }
-  });
+  const r = await axios.post(
+    "https://oauth2.googleapis.com/token",
+    qs.stringify(payload),
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+  );
 
   rec.access_token = r.data.access_token;
   rec.expires_at = Date.now() + r.data.expires_in * 1000;
@@ -34,7 +39,7 @@ async function refreshAccessIfNeeded(user) {
   return rec.access_token;
 }
 
-// AUTH URL
+// === 1) GENERAR URL DE AUTORIZACIÓN ===
 app.get("/auth", (req, res) => {
   const user = req.query.user;
 
@@ -53,7 +58,7 @@ app.get("/auth", (req, res) => {
   res.redirect(url);
 });
 
-// CALLBACK
+// === 2) CALLBACK DESPUÉS DE AUTORIZAR ===
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   const user = req.query.state;
@@ -67,9 +72,11 @@ app.get("/oauth/callback", async (req, res) => {
   };
 
   try {
-    const r = await axios.post("https://oauth2.googleapis.com/token", qs.stringify(payload), {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" }
-    });
+    const r = await axios.post(
+      "https://oauth2.googleapis.com/token",
+      qs.stringify(payload),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+    );
 
     store[user] = {
       access_token: r.data.access_token,
@@ -83,24 +90,29 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
-// CREATE EVENT → Make llama aquí
+// === 3) CREAR EVENTO (LLAMADO DESDE MAKE) ===
 app.post("/event", async (req, res) => {
   try {
     const { user, title, date, start, end, description, colorId } = req.body;
 
-    if (!store[user]) return res.status(401).json({ error: "not_authenticated" });
+    // SI NO ESTÁ AUTENTICADO → PEDIR AUTH
+    if (!store[user]) {
+      return res.json({
+        ok: false,
+        error: "not_authenticated",
+        needs_auth: true,
+        auth_url: `${process.env.REDIRECT_BASE}/auth?user=${encodeURIComponent(user)}`
+      });
+    }
 
+    // Obtener token funcional (refrescado o actual)
     const token = await refreshAccessIfNeeded(user);
 
     const eventBody = {
       summary: title,
       description,
-      start: {
-        dateTime: `${date}T${start}:00-04:00`
-      },
-      end: {
-        dateTime: `${date}T${end}:00-04:00`
-      }
+      start: { dateTime: `${date}T${start}:00-04:00` },
+      end: { dateTime: `${date}T${end}:00-04:00` }
     };
 
     if (colorId) eventBody.colorId = colorId;
@@ -108,15 +120,35 @@ app.post("/event", async (req, res) => {
     const r = await axios.post(
       "https://www.googleapis.com/calendar/v3/calendars/primary/events",
       eventBody,
-      {
-        headers: { Authorization: `Bearer ${token}` }
-      }
+      { headers: { Authorization: `Bearer ${token}` } }
     );
 
-    res.json({ ok: true, id: r.data.id });
+    return res.json({
+      ok: true,
+      needs_auth: false,
+      id: r.data.id
+    });
+
   } catch (error) {
-    res.json({ ok: false, error });
+    // SI EL TOKEN YA NO FUNCIONA
+    if (error.response && error.response.status === 401) {
+      return res.json({
+        ok: false,
+        error: "not_authenticated",
+        needs_auth: true,
+        auth_url: `${process.env.REDIRECT_BASE}/auth?user=${encodeURIComponent(req.body.user)}`
+      });
+    }
+
+    res.json({
+      ok: false,
+      needs_auth: false,
+      error: error.message
+    });
   }
 });
 
-app.listen(3000, () => console.log("Server running on port 3000"));
+// === 4) INICIAR SERVIDOR ===
+app.listen(3000, () => {
+  console.log("Server running on port 3000");
+});
