@@ -7,7 +7,6 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Memoria temporal: userId -> tokens
 const store = {};
 
 async function refreshAccessIfNeeded(userId) {
@@ -17,8 +16,8 @@ async function refreshAccessIfNeeded(userId) {
   if (rec.expires_at > Date.now() + 60000) return rec.access_token;
 
   const payload = {
-    client_id: process.env.GOOGLE_CLIENT_ID,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET,
+    client_id: process.env.CLIENT_ID,
+    client_secret: process.env.CLIENT_SECRET,
     refresh_token: rec.refresh_token,
     grant_type: "refresh_token"
   };
@@ -43,7 +42,7 @@ app.get("/auth", (req, res) => {
   const url =
     "https://accounts.google.com/o/oauth2/v2/auth?" +
     qs.stringify({
-      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_id: process.env.CLIENT_ID,
       redirect_uri: process.env.REDIRECT_URI,
       response_type: "code",
       scope: "https://www.googleapis.com/auth/calendar.events",
@@ -62,8 +61,8 @@ app.get("/oauth/callback", async (req, res) => {
   if (!code || !user) return res.status(400).send("Missing params");
 
   const payload = {
-    client_id: process.env.GOOGLE_CLIENT_ID,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET,
+    client_id: process.env.CLIENT_ID,
+    client_secret: process.env.CLIENT_SECRET,
     code,
     grant_type: "authorization_code",
     redirect_uri: process.env.REDIRECT_URI
@@ -95,7 +94,6 @@ app.post("/event", async (req, res) => {
     const user = req.body.user;
     if (!user) return res.json({ ok: false, error: "missing_user" });
 
-    // Si NO está autenticado
     if (!store[user]) {
       return res.json({
         ok: false,
@@ -104,7 +102,6 @@ app.post("/event", async (req, res) => {
       });
     }
 
-    // Intentar refrescar
     let token;
     try {
       token = await refreshAccessIfNeeded(user);
@@ -116,7 +113,6 @@ app.post("/event", async (req, res) => {
       });
     }
 
-    // Crear evento
     const { title, date, start, end, description } = req.body;
 
     const eventBody = {
