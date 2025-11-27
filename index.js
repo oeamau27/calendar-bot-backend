@@ -2,13 +2,35 @@ import express from "express";
 import axios from "axios";
 import qs from "qs";
 import cors from "cors";
+import fs from "fs";
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-const store = {};
+// --- PERSISTENCIA ---
+const TOKENS_FILE = "./tokens.json";
 
+function loadTokens() {
+  try {
+    return JSON.parse(fs.readFileSync(TOKENS_FILE, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveTokens(store) {
+  fs.writeFileSync(TOKENS_FILE, JSON.stringify(store, null, 2));
+}
+
+let store = loadTokens();
+
+// --- DEBUG ---
+app.get("/debug", (req, res) => {
+  res.json(store);
+});
+
+// --- REFRESCAR TOKEN ---
 async function refreshAccessIfNeeded(userId) {
   const rec = store[userId];
   if (!rec) throw new Error("no_tokens");
@@ -31,10 +53,12 @@ async function refreshAccessIfNeeded(userId) {
   rec.access_token = r.data.access_token;
   rec.expires_at = Date.now() + (r.data.expires_in || 3600) * 1000;
   store[userId] = rec;
+  saveTokens(store);
 
   return rec.access_token;
 }
 
+// --- AUTH URL ---
 app.get("/auth", (req, res) => {
   const user = req.query.user;
   if (!user) return res.status(400).send("Missing user");
@@ -54,6 +78,7 @@ app.get("/auth", (req, res) => {
   res.redirect(url);
 });
 
+// --- CALLBACK ---
 app.get("/oauth/callback", async (req, res) => {
   const code = req.query.code;
   const user = req.query.state;
@@ -81,6 +106,8 @@ app.get("/oauth/callback", async (req, res) => {
       expires_at: Date.now() + (r.data.expires_in || 3600) * 1000
     };
 
+    saveTokens(store);
+
     res.send("<h2>Autorización completada ✔ — Puedes volver a WhatsApp.</h2>");
 
   } catch (e) {
@@ -89,11 +116,13 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
+// --- CREAR EVENTO ---
 app.post("/event", async (req, res) => {
   try {
     const user = req.body.user;
     if (!user) return res.json({ ok: false, error: "missing_user" });
 
+    // NOT AUTHENTICATED
     if (!store[user]) {
       return res.json({
         ok: false,
@@ -119,7 +148,8 @@ app.post("/event", async (req, res) => {
       summary: title,
       description: description || "",
       start: { dateTime: `${date}T${start}:00` },
-      end: { dateTime: `${date}T${end}:00` }
+      end: { dateTime: `${date}T${end}:00` },
+      timeZone: "America/La_Paz"
     };
 
     const r = await axios.post(
